@@ -26,7 +26,7 @@ my_local_rank = -1
 my_local_size = -1
 alltoall_supported = False
 a2a_impl = os.environ.get("DLRM_ALLTOALL_IMPL", "")
-
+print(f"------------- a2a_impl = {a2a_impl} {torch.cuda.nccl.version()}")
 myreq = None
 
 
