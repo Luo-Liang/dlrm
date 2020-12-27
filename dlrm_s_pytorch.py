@@ -61,6 +61,7 @@ import datetime
 import json
 import sys
 import time
+from torchsummary import summary_string_huggingface
 
 # onnx
 # The onnx import causes deprecation warnings every time workers
@@ -549,12 +550,13 @@ class DLRM_Net(nn.Module):
         if len(self.emb_l) != len(ly):
             sys.exit("ERROR: corrupted intermediate result in distributed_forward call")
 
-        a2a_req = ext_dist.alltoall(ly, self.n_emb_per_rank)
+        # print([x.shape for x in ly])
+        #a2a_req = ext_dist.alltoall(ly, self.n_emb_per_rank)
 
         with record_function("DLRM bottom nlp forward"):
             x = self.apply_mlp(dense_x, self.bot_l)
 
-        ly = a2a_req.wait()
+        #ly = a2a_req.wait()
         ly = list(ly)
 
         # interactions
@@ -1298,6 +1300,7 @@ def run():
     if ext_dist.my_size > 1:
         if use_gpu:
             device_ids = [ext_dist.my_local_rank]
+            dlrm.emb_l = ext_dist.DDP(dlrm.emb_l, device_ids=device_ids)
             dlrm.bot_l = ext_dist.DDP(dlrm.bot_l, device_ids=device_ids)
             dlrm.top_l = ext_dist.DDP(dlrm.top_l, device_ids=device_ids)
         else:

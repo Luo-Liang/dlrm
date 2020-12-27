@@ -40,12 +40,18 @@ def env2int(env_list, default=-1):
 
 def get_my_slice(n):
     k, m = divmod(n, my_size)
-    return slice(
+    s = slice(
         my_rank * k + min(my_rank, m), (my_rank + 1) * k + min(my_rank + 1, m), 1
     )
+    s = slice(
+        0, n, 1
+    )
+    #print(f"--------> {s} <---------")
+    return s
 
 
 def get_split_lengths(n):
+    return (n, None)
     k, m = divmod(n, my_size)
     if m == 0:
         splits = None

@@ -948,7 +948,8 @@ def getCriteoAdData(
             # Each line in the file is a sample, consisting of 13 continuous and
             # 26 categorical features (an extra space indicates that feature is
             # missing and will be interpreted as 0).
-            for i in range(days):
+            print(f"days is {days}, shortened to 1")
+            for i in range(2):
                 datafile_i = datafile + "_" + str(i)  # + ".gz"
                 if path.exists(str(datafile_i)):
                     print("Reading data from path=%s" % (str(datafile_i)))
@@ -960,6 +961,7 @@ def getCriteoAdData(
                     total_per_file.append(total_per_file_count)
                     total_count += total_per_file_count
                 else:
+                    print("cannot find=%s" % (str(datafile_i)))                    
                     sys.exit("ERROR: Criteo Terabyte Dataset path is invalid; please download from https://labs.criteo.com/2013/12/download-terabyte-click-logs")
 
     # process a file worth of data and reinitialize data
@@ -1212,16 +1214,18 @@ def loadDataset(
         pro_data="",
         memory_map=False
 ):
+    assert False
     # dataset
     if dataset == "kaggle":
         days = 7
         o_filename = "kaggleAdDisplayChallenge_processed"
     elif dataset == "terabyte":
-        days = 24
+        days = 2
         o_filename = "terabyte_processed"
     else:
         raise(ValueError("Data set option is not supported"))
-
+    print(f"current days: {days}")
+    assert False
     # split the datafile into path and filename
     lstr = raw_path.split("/")
     d_path = "/".join(lstr[0:-1]) + "/"
@@ -1246,7 +1250,7 @@ def loadDataset(
         print("Reading pre-processed data=%s" % (str(pro_data)))
         file = str(pro_data)
     else:
-        print("Reading raw data=%s" % (str(raw_path)))
+        print("Reading raw data=%s. days = %d" % (str(raw_path), days))
         file = getCriteoAdData(
             raw_path,
             o_filename,
