@@ -1298,7 +1298,7 @@ def run():
 
     # distribute data parallel mlps
     if ext_dist.my_size > 1:
-        print(f"[PRE-DDP] emb_params: {[p for emb in dlrm.emb_l for p in emb.parameters()]}")
+        print(f"[PRE-DDP] emb_params: {[p.shape for emb in dlrm.emb_l for p in emb.parameters()]}")
         if use_gpu:
             device_ids = [ext_dist.my_local_rank]
             dlrm.emb_l = ext_dist.DDP(dlrm.emb_l, device_ids=device_ids)
@@ -1319,7 +1319,7 @@ def run():
             "adagrad": torch.optim.Adagrad,
         }
         if ext_dist.my_size != 1:
-            print(f"[post-DDP] emb_params: {dlrm.emb_l.parameters()}") 
+            print(f"[post-DDP] emb_params: {[x.shape for x in dlrm.emb_l.parameters()]}") 
 
         parameters = (
             dlrm.parameters()
