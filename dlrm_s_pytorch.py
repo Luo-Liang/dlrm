@@ -1326,7 +1326,7 @@ def run():
             if ext_dist.my_size == 1
             else [
                 {
-                    "params": [p for emb in dlrm.emb_l for p in emb.parameters()],
+                    "params": dlrm.emb_l.parameters()  #[p for emb in dlrm.emb_l for p in emb.parameters()],
                     "lr": args.learning_rate,
                 },
                 # TODO check this lr setup
