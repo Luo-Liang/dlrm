@@ -209,7 +209,7 @@ class CriteoDataset(Dataset):
                 self.counts = data["counts"]
             self.m_den = X_int.shape[1]  # den_fea
             self.n_emb = len(self.counts)
-            print("Sparse fea = %d, Dense fea = %d" % (self.n_emb, self.m_den))
+            print("Sparse fea = %d, Dense fea = %d, y = %d" % (self.n_emb, self.m_den, len(y)))
 
             # create reordering
             indices = np.arange(len(y))
@@ -557,6 +557,7 @@ def make_criteo_data_and_loaders(args, offset_to_length_converter=False):
             collate_fn=collate_wrapper_criteo,
             pin_memory=False,
             drop_last=False,  # True
+            sampler = torch.utils.data.distributed.DistributedSampler(train_data)
         )
 
         test_loader = torch.utils.data.DataLoader(
@@ -567,8 +568,8 @@ def make_criteo_data_and_loaders(args, offset_to_length_converter=False):
             collate_fn=collate_wrapper_criteo,
             pin_memory=False,
             drop_last=False,  # True
+            sampler = torch.utils.data.distributed.DistributedSampler(test_data)
         )
-
     return train_data, train_loader, test_data, test_loader
 
 

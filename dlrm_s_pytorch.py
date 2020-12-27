@@ -192,6 +192,73 @@ class LRPolicyScheduler(_LRScheduler):
         return lr
 
 
+class ForwardableModuleList(nn.Module):
+    def __init__(self, quantize_emb, quantize_bits, emb_l_q, module_list:nn.ModuleList) -> None:
+        super(ForwardableModuleList,self).__init__()
+        self.emb_l = module_list.cuda()
+        self.quantize_emb = quantize_emb
+        self.quantize_bits = quantize_bits
+        self.emb_l_q = emb_l_q
+
+    def forward(self, lS_o, lS_i, v_W_l):
+        # = bundle
+        # WARNING: notice that we are processing the batch at once. We implicitly
+        # assume that the data is laid out such that:
+        # 1. each embedding is indexed with a group of sparse indices,
+        #   corresponding to a single lookup
+        # 2. for each embedding the lookups are further organized into a batch
+        # 3. for a list of embedding tables there is a list of batched lookups
+        emb_l = self.emb_l
+        ly = []
+        for k, sparse_index_group_batch in enumerate(lS_i):
+            sparse_offset_group_batch = lS_o[k]
+
+            # embedding lookup
+            # We are using EmbeddingBag, which implicitly uses sum operator.
+            # The embeddings are represented as tall matrices, with sum
+            # happening vertically across 0 axis, resulting in a row vector
+            # E = emb_l[k]
+
+            if v_W_l[k] is not None:
+                per_sample_weights = v_W_l[k].gather(0, sparse_index_group_batch)
+            else:
+                per_sample_weights = None
+
+            if self.quantize_emb:
+                s1 = self.emb_l_q[k].element_size() * self.emb_l_q[k].nelement()
+                s2 = self.emb_l_q[k].element_size() * self.emb_l_q[k].nelement()
+                print("quantized emb sizes:", s1, s2)
+
+                if self.quantize_bits == 4:
+                    QV = ops.quantized.embedding_bag_4bit_rowwise_offsets(
+                        self.emb_l_q[k],
+                        sparse_index_group_batch,
+                        sparse_offset_group_batch,
+                        per_sample_weights=per_sample_weights,
+                    )
+                elif self.quantize_bits == 8:
+                    QV = ops.quantized.embedding_bag_byte_rowwise_offsets(
+                        self.emb_l_q[k],
+                        sparse_index_group_batch,
+                        sparse_offset_group_batch,
+                        per_sample_weights=per_sample_weights,
+                    )
+
+                ly.append(QV)
+            else:
+                E = emb_l[k]
+                V = E(
+                    sparse_index_group_batch,
+                    sparse_offset_group_batch,
+                    per_sample_weights=per_sample_weights,
+                )
+
+                ly.append(V)
+
+        # print(ly)
+        return ly
+
+
 ### define dlrm in PyTorch ###
 class DLRM_Net(nn.Module):
     def create_mlp(self, ln, sigmoid_layer):
@@ -263,14 +330,14 @@ class DLRM_Net(nn.Module):
                 ).astype(np.float32)
                 EE.embs.weight.data = torch.tensor(W, requires_grad=True)
             else:
-                EE = nn.EmbeddingBag(n, m, mode="sum", sparse=True)
+                EE = nn.EmbeddingBag(n, m, mode="sum").cuda()
                 # initialize embeddings
                 # nn.init.uniform_(EE.weight, a=-np.sqrt(1 / n), b=np.sqrt(1 / n))
                 W = np.random.uniform(
                     low=-np.sqrt(1 / n), high=np.sqrt(1 / n), size=(n, m)
                 ).astype(np.float32)
                 # approach 1
-                EE.weight.data = torch.tensor(W, requires_grad=True)
+                EE.weight.data = torch.tensor(W, requires_grad=True).cuda()
                 # approach 2
                 # EE.weight.data.copy_(torch.tensor(W))
                 # approach 3
@@ -278,7 +345,7 @@ class DLRM_Net(nn.Module):
             if weighted_pooling is None:
                 v_W_l.append(None)
             else:
-                v_W_l.append(torch.ones(n, dtype=torch.float32))
+                v_W_l.append(torch.ones(n, dtype=torch.float32).cuda())
             emb_l.append(EE)
         return emb_l, v_W_l
 
@@ -304,7 +371,8 @@ class DLRM_Net(nn.Module):
         weighted_pooling=None,
     ):
         super(DLRM_Net, self).__init__()
-
+        print(f"ln_emb = {ln_emb}")
+        self.ln_emb = ln_emb
         if (
             (m_spa is not None)
             and (ln_emb is not None)
@@ -392,62 +460,6 @@ class DLRM_Net(nn.Module):
         # approach 2: use Sequential container to wrap all layers
         return layers(x)
 
-    def apply_emb(self, lS_o, lS_i, emb_l, v_W_l):
-        # WARNING: notice that we are processing the batch at once. We implicitly
-        # assume that the data is laid out such that:
-        # 1. each embedding is indexed with a group of sparse indices,
-        #   corresponding to a single lookup
-        # 2. for each embedding the lookups are further organized into a batch
-        # 3. for a list of embedding tables there is a list of batched lookups
-
-        ly = []
-        for k, sparse_index_group_batch in enumerate(lS_i):
-            sparse_offset_group_batch = lS_o[k]
-
-            # embedding lookup
-            # We are using EmbeddingBag, which implicitly uses sum operator.
-            # The embeddings are represented as tall matrices, with sum
-            # happening vertically across 0 axis, resulting in a row vector
-            # E = emb_l[k]
-
-            if v_W_l[k] is not None:
-                per_sample_weights = v_W_l[k].gather(0, sparse_index_group_batch)
-            else:
-                per_sample_weights = None
-
-            if self.quantize_emb:
-                s1 = self.emb_l_q[k].element_size() * self.emb_l_q[k].nelement()
-                s2 = self.emb_l_q[k].element_size() * self.emb_l_q[k].nelement()
-                print("quantized emb sizes:", s1, s2)
-
-                if self.quantize_bits == 4:
-                    QV = ops.quantized.embedding_bag_4bit_rowwise_offsets(
-                        self.emb_l_q[k],
-                        sparse_index_group_batch,
-                        sparse_offset_group_batch,
-                        per_sample_weights=per_sample_weights,
-                    )
-                elif self.quantize_bits == 8:
-                    QV = ops.quantized.embedding_bag_byte_rowwise_offsets(
-                        self.emb_l_q[k],
-                        sparse_index_group_batch,
-                        sparse_offset_group_batch,
-                        per_sample_weights=per_sample_weights,
-                    )
-
-                ly.append(QV)
-            else:
-                E = emb_l[k]
-                V = E(
-                    sparse_index_group_batch,
-                    sparse_offset_group_batch,
-                    per_sample_weights=per_sample_weights,
-                )
-
-                ly.append(V)
-
-        # print(ly)
-        return ly
 
     #  using quantizing functions from caffe2/aten/src/ATen/native/quantized/cpu
     def quantize_embedding(self, bits):
@@ -515,6 +527,7 @@ class DLRM_Net(nn.Module):
             # single-node multi-device run
             return self.parallel_forward(dense_x, lS_o, lS_i)
 
+
     def distributed_forward(self, dense_x, lS_o, lS_i):
         batch_size = dense_x.size()[0]
         # WARNING: # of ranks must be <= batch size in distributed_forward call
@@ -533,21 +546,25 @@ class DLRM_Net(nn.Module):
         lS_o = lS_o[self.local_emb_slice]
         lS_i = lS_i[self.local_emb_slice]
 
-        if (len(self.emb_l) != len(lS_o)) or (len(self.emb_l) != len(lS_i)):
+        if (len(self.ln_emb) != len(lS_o)) or (len(self.ln_emb) != len(lS_i)):
             sys.exit(
                 "ERROR: corrupted model input detected in distributed_forward call"
             )
 
         # embeddings
         with record_function("DLRM embedding forward"):
-            ly = self.apply_emb(lS_o, lS_i, self.emb_l, self.v_W_l)
+            #forward(self,lS_o, lS_i, v_W_l):
+            #input = ()
+            #print(f"type = {self.emb_l}")
+            ly = self.emb_l.forward(lS_o, lS_i, self.v_W_l)
+            #ly = self.apply_emb(lS_o, lS_i, self.emb_l, self.v_W_l)
 
         # WARNING: Note that at this point we have the result of the embedding lookup
         # for the entire batch on each rank. We would like to obtain partial results
         # corresponding to all embedding lookups, but part of the batch on each rank.
         # Therefore, matching the distribution of output of bottom mlp, so that both
         # could be used for subsequent interactions on each device.
-        if len(self.emb_l) != len(ly):
+        if len(self.ln_emb) != len(ly):
             sys.exit("ERROR: corrupted intermediate result in distributed_forward call")
 
         # print([x.shape for x in ly])
@@ -583,7 +600,9 @@ class DLRM_Net(nn.Module):
         # print(x.detach().cpu().numpy())
 
         # process sparse features(using embeddings), resulting in a list of row vectors
-        ly = self.apply_emb(lS_o, lS_i, self.emb_l, self.v_W_l)
+        #forward(self,lS_o, lS_i, v_W_l):
+        #ly = self.apply_emb(lS_o, lS_i, self.emb_l, self.v_W_l)
+        ly = self.emb_l.forward(lS_o, lS_i, self.v_W_l)
         # for y in ly:
         #     print(y.detach().cpu().numpy())
 
@@ -668,7 +687,9 @@ class DLRM_Net(nn.Module):
         # print(x)
 
         # embeddings
-        ly = self.apply_emb(lS_o, lS_i, self.emb_l, self.v_W_l)
+        #forward(self,lS_o, lS_i, v_W_l):
+        #ly = self.apply_emb(lS_o, lS_i, self.emb_l, self.v_W_l)
+        ly = self.emb_l(lS_o, lS_i, self.v_W_l)
         # debug prints
         # print(ly)
 
@@ -1086,6 +1107,7 @@ def run():
 
     if args.data_generation == "dataset":
         train_data, train_ld, test_data, test_ld = dp.make_criteo_data_and_loaders(args)
+        print(f"training batches = {len(train_ld)}, test batches = {len(test_ld)}, num_worker = {args.num_workers}")
         table_feature_map = {idx: idx for idx in range(len(train_data.counts))}
         nbatches = args.num_batches if args.num_batches > 0 else len(train_ld)
         nbatches_test = len(test_ld)
@@ -1292,13 +1314,16 @@ def run():
                 m_spa, ln_emb, args.weighted_pooling
             )
         else:
+            #print(f"-------------WARNING: UNMODIFIED DLRM.EMB_L = {dlrm.emb_l}")
             if dlrm.weighted_pooling == "fixed":
                 for k, w in enumerate(dlrm.v_W_l):
                     dlrm.v_W_l[k] = w.cuda()
-
+        dlrm.emb_l = ForwardableModuleList(None, None, None, dlrm.emb_l).cuda()
     # distribute data parallel mlps
     if ext_dist.my_size > 1:
-        print(f"[PRE-DDP] emb_params: {[p.shape for emb in dlrm.emb_l for p in emb.parameters()]}")
+        print(f"[PRE-DDP] emb_params: {[x.shape for x in dlrm.emb_l.parameters()]}")
+        for par in dlrm.emb_l.parameters():
+            assert par.is_cuda
         if use_gpu:
             device_ids = [ext_dist.my_local_rank]
             dlrm.emb_l = ext_dist.DDP(dlrm.emb_l, device_ids=device_ids)
@@ -1326,7 +1351,7 @@ def run():
             if ext_dist.my_size == 1
             else [
                 {
-                    "params": dlrm.emb_l.parameters()  #[p for emb in dlrm.emb_l for p in emb.parameters()],
+                    "params": dlrm.emb_l.parameters(), #[p for emb in dlrm.emb_l for p in emb.parameters()],
                     "lr": args.learning_rate,
                 },
                 # TODO check this lr setup
@@ -1590,7 +1615,6 @@ def run():
                         optimizer.zero_grad()
                         # backward pass
                         E.backward()
-
                         # optimizer
                         optimizer.step()
                         lr_scheduler.step()
