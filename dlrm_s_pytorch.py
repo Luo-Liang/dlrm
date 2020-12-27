@@ -1298,12 +1298,14 @@ def run():
 
     # distribute data parallel mlps
     if ext_dist.my_size > 1:
+        print(f"[PRE-DDP] emb_params: {[p for emb in dlrm.emb_l for p in emb.parameters()]}")
         if use_gpu:
             device_ids = [ext_dist.my_local_rank]
             dlrm.emb_l = ext_dist.DDP(dlrm.emb_l, device_ids=device_ids)
             dlrm.bot_l = ext_dist.DDP(dlrm.bot_l, device_ids=device_ids)
             dlrm.top_l = ext_dist.DDP(dlrm.top_l, device_ids=device_ids)
         else:
+            dlrm.emb_l = ext_dist.DDP(dlrm.emb_l)
             dlrm.bot_l = ext_dist.DDP(dlrm.bot_l)
             dlrm.top_l = ext_dist.DDP(dlrm.top_l)
 
@@ -1338,6 +1340,10 @@ def run():
                 },
             ]
         )
+       
+        if ext_dist.my_size != 1:
+            print(f"[post-DDP] emb_params: {parameters[0]}") 
+
         optimizer = opts[args.optimizer](parameters, lr=args.learning_rate)
         lr_scheduler = LRPolicyScheduler(
             optimizer,
