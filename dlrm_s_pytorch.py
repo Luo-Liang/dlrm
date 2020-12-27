@@ -1318,6 +1318,8 @@ def run():
             "rwsadagrad": RowWiseSparseAdagrad.RWSAdagrad,
             "adagrad": torch.optim.Adagrad,
         }
+        if ext_dist.my_size != 1:
+            print(f"[post-DDP] emb_params: {dlrm.emb_l.parameters()}") 
 
         parameters = (
             dlrm.parameters()
@@ -1341,8 +1343,7 @@ def run():
             ]
         )
        
-        if ext_dist.my_size != 1:
-            print(f"[post-DDP] emb_params: {parameters[0]}") 
+
 
         optimizer = opts[args.optimizer](parameters, lr=args.learning_rate)
         lr_scheduler = LRPolicyScheduler(
