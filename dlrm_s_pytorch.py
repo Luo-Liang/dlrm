@@ -61,7 +61,6 @@ import datetime
 import json
 import sys
 import time
-from torchsummary import summary_string_huggingface
 
 # onnx
 # The onnx import causes deprecation warnings every time workers
@@ -91,6 +90,12 @@ from torch.nn.parameter import Parameter
 from torch.optim.lr_scheduler import _LRScheduler
 import optim.rwsadagrad as RowWiseSparseAdagrad
 from torch.utils.tensorboard import SummaryWriter
+import os
+from torchsummary import summary_string_dlrm
+if "INSTRUMENT" in os.environ:
+    INSTRUMENT = int(os.environ["INSTRUMENT"])
+else:
+    INSTRUMENT = 0
 
 # mixed-dimension trick
 from tricks.md_embedding_bag import PrEmbeddingBag, md_solver
@@ -280,8 +285,8 @@ class DLRM_Net(nn.Module):
             std_dev = np.sqrt(1 / m)  # np.sqrt(2 / (m + 1))
             bt = np.random.normal(mean, std_dev, size=m).astype(np.float32)
             # approach 1
-            LL.weight.data = torch.tensor(W, requires_grad=True)
-            LL.bias.data = torch.tensor(bt, requires_grad=True)
+            LL.weight.data = torch.tensor(W, requires_grad=True, dtype=torch.float)
+            LL.bias.data = torch.tensor(bt, requires_grad=True, dtype=torch.float)
             # approach 2
             # LL.weight.data.copy_(torch.tensor(W))
             # LL.bias.data.copy_(torch.tensor(bt))
@@ -294,6 +299,8 @@ class DLRM_Net(nn.Module):
             if i == sigmoid_layer:
                 layers.append(nn.Sigmoid())
             else:
+                #inplace=INSTRUMENT == 0
+                #print(f"WARNING: relu inplace is set to {inplace}")
                 layers.append(nn.ReLU())
 
         # approach 1: use ModuleList
@@ -328,7 +335,7 @@ class DLRM_Net(nn.Module):
                 W = np.random.uniform(
                     low=-np.sqrt(1 / n), high=np.sqrt(1 / n), size=(n, _m)
                 ).astype(np.float32)
-                EE.embs.weight.data = torch.tensor(W, requires_grad=True)
+                EE.embs.weight.data = torch.tensor(W, requires_grad=True, dtype=torch.float)
             else:
                 EE = nn.EmbeddingBag(n, m, mode="sum").cuda()
                 # initialize embeddings
@@ -336,8 +343,10 @@ class DLRM_Net(nn.Module):
                 W = np.random.uniform(
                     low=-np.sqrt(1 / n), high=np.sqrt(1 / n), size=(n, m)
                 ).astype(np.float32)
+                #if i == 0:
+                #    ext_dist.print_all(f"[{ext_dist.my_rank}] W = {W}", flush=True)
                 # approach 1
-                EE.weight.data = torch.tensor(W, requires_grad=True).cuda()
+                EE.weight.data = torch.tensor(W, requires_grad=True, dtype=torch.float).cuda()
                 # approach 2
                 # EE.weight.data.copy_(torch.tensor(W))
                 # approach 3
@@ -969,7 +978,7 @@ def run():
     parser.add_argument("--data-sub-sample-rate", type=float, default=0.0)  # in [0, 1]
     parser.add_argument("--num-indices-per-lookup", type=int, default=10)
     parser.add_argument("--num-indices-per-lookup-fixed", type=bool, default=False)
-    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--memory-map", action="store_true", default=False)
     # training
     parser.add_argument("--mini-batch-size", type=int, default=1)
@@ -1107,7 +1116,7 @@ def run():
 
     if args.data_generation == "dataset":
         train_data, train_ld, test_data, test_ld = dp.make_criteo_data_and_loaders(args)
-        print(f"training batches = {len(train_ld)}, test batches = {len(test_ld)}, num_worker = {args.num_workers}")
+        print(f"[{ext_dist.my_rank}] training batches = {len(train_ld)}, test batches = {len(test_ld)}, num_worker = {args.num_workers}")
         table_feature_map = {idx: idx for idx in range(len(train_data.counts))}
         nbatches = args.num_batches if args.num_batches > 0 else len(train_ld)
         nbatches_test = len(test_ld)
@@ -1303,7 +1312,7 @@ def run():
         for param in dlrm.parameters():
             print(param.detach().cpu().numpy())
         # print(dlrm)
-
+    print(f"[{ext_dist.my_rank}] initialized dlrm_net")
     if use_gpu:
         # Custom Model-Data Parallel
         # the mlps are replicated and use data parallelism, while
@@ -1321,7 +1330,7 @@ def run():
         dlrm.emb_l = ForwardableModuleList(None, None, None, dlrm.emb_l).cuda()
     # distribute data parallel mlps
     if ext_dist.my_size > 1:
-        print(f"[PRE-DDP] emb_params: {[x.shape for x in dlrm.emb_l.parameters()]}")
+        print(f"[PRE-DDP:{ext_dist.my_rank}] emb_params: {[x.shape for x in dlrm.emb_l.parameters()]}")
         for par in dlrm.emb_l.parameters():
             assert par.is_cuda
         if use_gpu:
@@ -1344,7 +1353,7 @@ def run():
             "adagrad": torch.optim.Adagrad,
         }
         if ext_dist.my_size != 1:
-            print(f"[post-DDP] emb_params: {[x.shape for x in dlrm.emb_l.parameters()]}") 
+            print(f"[post-DDP:{ext_dist.my_rank}] emb_params: {[x.shape for x in dlrm.emb_l.parameters()]}") 
 
         parameters = (
             dlrm.parameters()
@@ -1554,6 +1563,8 @@ def run():
 
                     X, lS_o, lS_i, T, W, CBPP = unpack_batch(inputBatch)
 
+
+                    #ext_dist.print_all(f"[{ext_dist.my_rank}][iter={j}] X = {X[:,0:5]}")
                     if args.mlperf_logging:
                         current_time = time_wrap(use_gpu)
                         if previous_iteration_time:
@@ -1591,7 +1602,9 @@ def run():
                     if ext_dist.my_size > 1:
                         T = T[ext_dist.get_my_slice(mbs)]
                         W = W[ext_dist.get_my_slice(mbs)]
+                  
 
+                        
                     # loss
                     E = loss_fn_wrap(Z, T, use_gpu, device)
 
@@ -1608,6 +1621,16 @@ def run():
                     # mbs = T.shape[0]  # = args.mini_batch_size except maybe for last
                     # A = np.sum((np.round(S, 0) == T).astype(np.uint8))
                     # A_shifted = np.sum((np.round(S_shifted, 0) == T).astype(np.uint8))
+
+                    if INSTRUMENT > 0:
+                        #torch.autograd.set_detect_anomaly(True)
+                        print(f"Starting instrumentation...")
+                        fw,bw,parameters,ts = summary_string_dlrm(dlrm, inputBatch, device, loss_fn_wrap, INSTRUMENT, optimizer, bucketize=False)
+                        print(f"fw: {fw}")
+                        print(f"bw: {bw}")
+                        print(f"ps: {parameters}")
+                        print(f"ts: {ts}")
+                        exit()
 
                     with record_function("DLRM backward"):
                         # scaled error gradient propagation

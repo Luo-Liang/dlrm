@@ -549,6 +549,11 @@ def make_criteo_data_and_loaders(args, offset_to_length_converter=False):
         if offset_to_length_converter:
             collate_wrapper_criteo = collate_wrapper_criteo_length
 
+        try:
+            sampler = torch.utils.data.distributed.DistributedSampler(train_data)
+        except:
+            print("distributed training is off. sampler is set to None")
+            sampler = None
         train_loader = torch.utils.data.DataLoader(
             train_data,
             batch_size=args.mini_batch_size,
@@ -557,7 +562,7 @@ def make_criteo_data_and_loaders(args, offset_to_length_converter=False):
             collate_fn=collate_wrapper_criteo,
             pin_memory=False,
             drop_last=False,  # True
-            sampler = torch.utils.data.distributed.DistributedSampler(train_data)
+            sampler = sampler
         )
 
         test_loader = torch.utils.data.DataLoader(
@@ -568,7 +573,7 @@ def make_criteo_data_and_loaders(args, offset_to_length_converter=False):
             collate_fn=collate_wrapper_criteo,
             pin_memory=False,
             drop_last=False,  # True
-            sampler = torch.utils.data.distributed.DistributedSampler(test_data)
+            sampler = sampler
         )
     return train_data, train_loader, test_data, test_loader
 
