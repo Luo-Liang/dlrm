@@ -196,6 +196,22 @@ class LRPolicyScheduler(_LRScheduler):
                 lr = self.base_lrs
         return lr
 
+class Timer:
+    def __init__(self, holder, gpu_specifier):
+        self.holder = holder
+        self.device = gpu_specifier
+
+    def __enter__(self):
+        self.start = time.perf_counter()
+        return self
+
+    def __exit__(self, *args):
+        # _smart_print("[%d] synchronizing..." % dist.get_rank())
+        torch.cuda.synchronize()
+        # _smart_print("[%d] synchronized." % dist.get_rank())
+        self.end = time.perf_counter()
+        self.interval = self.end - self.start
+        self.holder.append(self.interval)
 
 class ForwardableModuleList(nn.Module):
     def __init__(self, quantize_emb, quantize_bits, emb_l_q, module_list:nn.ModuleList) -> None:
@@ -1254,6 +1270,7 @@ def run():
         print(ln_emb)
 
         print("data (inputs and targets):")
+
         for j, inputBatch in enumerate(train_ld):
             X, lS_o, lS_i, T, W, CBPP = unpack_batch(inputBatch)
 
@@ -1526,6 +1543,15 @@ def run():
     writer = SummaryWriter(tb_file)
 
     ext_dist.barrier()
+
+    loader_times = []
+    fw_times = []
+    bw_times = []
+    #    def __init__(self, holder, gpu_specifier):
+    def enumerate_wrapper(train_ld, container):
+        with Timer(container, device):
+            return enumerate(train_ld)
+
     with torch.autograd.profiler.profile(
         args.enable_profiling, use_gpu, record_shapes=True
     ) as prof:
@@ -1590,6 +1616,7 @@ def run():
                     mbs = T.shape[0]  # = args.mini_batch_size except maybe for last
 
                     # forward pass
+                    # with Timer(fw_times, device):
                     Z = dlrm_wrap(
                         X,
                         lS_o,
@@ -1625,13 +1652,13 @@ def run():
                     if INSTRUMENT > 0:
                         #torch.autograd.set_detect_anomaly(True)
                         print(f"Starting instrumentation...")
-                        fw,bw,parameters,ts = summary_string_dlrm(dlrm, inputBatch, device, loss_fn_wrap, INSTRUMENT, optimizer, bucketize=False)
+                        fw,bw,parameters,ts = summary_string_dlrm(dlrm, train_ld, device, loss_fn_wrap, INSTRUMENT, optimizer, bucketize=False)
                         print(f"fw: {fw}")
                         print(f"bw: {bw}")
                         print(f"ps: {parameters}")
                         print(f"ts: {ts}")
                         exit()
-
+                    #with Timer(bw_times, device):
                     with record_function("DLRM backward"):
                         # scaled error gradient propagation
                         # (where we do not accumulate gradients across mini-batches)
@@ -1685,9 +1712,10 @@ def run():
                             + wall_time,
                             flush=True,
                         )
+                        #print(f"Authorative: FW = {np.mean(fw_times)}, BW = {np.mean(bw_times)}, LOADER = {np.mean(loader_times)}")
 
                         log_iter = nbatches * k + j + 1
-                        writer.add_scalar("Train/Loss", train_loss, log_iter)
+                        #writer.add_scalar("Train/Loss", train_loss, log_iter)
 
                         total_iter = 0
                         total_samp = 0
