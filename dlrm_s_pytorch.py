@@ -433,7 +433,7 @@ class DLRM_Net(nn.Module):
             # If running distributed, get local slice of embedding tables
             if ext_dist.my_size > 1:
                 n_emb = len(ln_emb)
-                if n_emb < ext_dist.my_size:
+                if n_emb < ext_dist.my_size and False:
                     sys.exit(
                         "only (%d) sparse features for (%d) devices, table partitions will fail"
                         % (n_emb, ext_dist.my_size)
